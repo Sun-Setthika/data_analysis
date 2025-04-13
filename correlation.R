@@ -2,38 +2,51 @@
 library(dplyr)
 library(readr)
 library(corrplot)
+library(ggplot2)
 
-# Load data
+# Load and preprocess data
 data <- read_csv("D:/Files/Side_Project/preprocess_data/merged_dataset.csv")
-
-# Standardize column names
 colnames(data) <- gsub("[ ?]", "_", colnames(data))
 
-# Convert Check_Frequency to ordered factor
-data$Check_Frequency <- factor(
-  data$How_often_do_you_check_social_media,
-  levels = c(
-    "Once a day", 
-    "Several times a day", 
-    "Multiple times per hour",
-    "Every hour",
-    ""
-  ),
-  ordered = TRUE
+# Clean frequency column and enforce ordinality
+data <- data %>%
+  mutate(
+    How_often_do_you_check_social_media = case_when(
+      How_often_do_you_check_social_media == "Moins d'une heure" ~ "Less than 1 hour",
+      TRUE ~ How_often_do_you_check_social_media
+    ),
+    Check_Frequency = factor(
+      How_often_do_you_check_social_media,
+      levels = c(
+        "Less than 1 hour",          # Least frequent
+        "Several times a day", 
+        "Every hour",
+        "Multiple times per hour"     # Most frequent
+      ),
+      ordered = TRUE
+    )
+  ) %>%
+  filter(!is.na(Check_Frequency))  # Remove invalid entries
+
+# Handle multilingual feelings
+feelings_col <- "Do_you_experience_any_of_these_feelings_when_unable_to_access_social_media"
+feelings <- c(
+  "Boredom|Ennui",
+  "Relief",
+  "Anxious|Anxiété",
+  "Isolated|Isolement",
+  "No particular feelings|Aucun sentiment particulier",
+  "None of these feelings|Aucun de ces sentiments",
+  "Fear of missing out|FOMO",
+  "Irritability",
+  "Restlessness",
+  "Loneliness|Solitude"
 )
 
-# Verify feelings column exists
-feelings_col <- "Do_you_experience_any_of_these_feelings_when_unable_to_access_social_media"
-if (!feelings_col %in% colnames(data)) stop("Column not found: ", feelings_col)
-
-# Create binary indicators for feelings (ensure numeric)
-feelings <- c("Boredom", "Relief", "Anxious", "Isolated", "No particular feelings / None of these feelings", "Fear of missing out", "Irritability", "Restlessness", "Loneliness")
-for (feeling in feelings) {
-  data[[paste0("Feeling_", feeling)]] <- as.numeric(
-    grepl(paste0("\\b", feeling, "\\b"), 
-          data[[feelings_col]], 
-          ignore.case = TRUE
-    )
+for (pattern in feelings) {
+  name <- gsub("\\|.*", "", pattern)
+  data[[paste0("Feeling_", gsub(" ", "_", name))]] <- as.numeric(
+    grepl(paste0("\\b(", pattern, ")\\b"), data[[feelings_col]], ignore.case = TRUE)
   )
 }
 
@@ -41,50 +54,50 @@ for (feeling in feelings) {
 correlation_data <- data %>%
   select(Check_Frequency, starts_with("Feeling_")) %>%
   mutate(
-    Check_Frequency_Numeric = as.numeric(Check_Frequency)
+    Check_Frequency_Numeric = as.numeric(Check_Frequency),
+    across(-Check_Frequency, as.numeric)
   )
 
-# Ensure ALL columns are numeric (critical fix)
-correlation_data <- correlation_data %>%
-  mutate(across(-Check_Frequency, as.numeric))
-
-# Remove zero-variance columns (safely)
-zero_var_cols <- sapply(correlation_data[, -1], function(x) {
-  var_val <- var(x, na.rm = TRUE)
-  if (is.na(var_val)) FALSE else var_val == 0
-})
-zero_var_cols <- names(zero_var_cols[zero_var_cols])
-
-if (length(zero_var_cols) > 0) {
-  correlation_data_filtered <- correlation_data %>% select(-all_of(zero_var_cols))
-} else {
-  correlation_data_filtered <- correlation_data
-}
-
-# Verify numeric types (add this check)
-cat("\nColumn types in filtered data:\n")
-print(sapply(correlation_data_filtered[, -1], class))
-
-# Calculate correlations
-correlation_matrix <- cor(
-  correlation_data_filtered[, -1, drop = FALSE],  # Exclude factor column
-  method = "spearman",
-  use = "pairwise.complete.obs"
-)
-
-# Subset to frequency vs feelings
-frequency_correlations <- correlation_matrix["Check_Frequency_Numeric", ]
-frequency_correlations <- frequency_correlations[
-  names(frequency_correlations) != "Check_Frequency_Numeric"
-]
-
-# Visualize
-corrplot(
-  as.matrix(frequency_correlations),
-  method = "color",
-  tl.col = "black",
-  tl.srt = 45,
-  title = "Check Frequency vs. Feelings",
-  mar = c(0, 0, 2, 0),
-  cl.pos = "r"
-)
+# Remove zero-variance columns
+correlation_data_filtered <- correlation_data %>%
+  select(-where(~var(., na.rm = TRUE) %in% c(0, NA))
+         
+         # Calculate Spearman correlations
+         correlation_matrix <- cor(
+           correlation_data_filtered[, -1, drop = FALSE],
+           method = "spearman",
+           use = "pairwise.complete.obs"
+         ))
+         
+         # ------------------------------------------
+         # Visualization 1: Bar Chart (Recommended)
+         # ------------------------------------------
+         frequency_correlations <- correlation_matrix["Check_Frequency_Numeric", , drop = FALSE] %>% 
+           as.data.frame() %>%
+           tibble::rownames_to_column(var = "Variable") %>%
+           filter(Variable != "Check_Frequency_Numeric") %>%  # Fixed syntax
+           rename(Correlation = Check_Frequency_Numeric)
+         
+         ggplot(frequency_correlations, aes(x = reorder(Variable, Correlation), y = Correlation)) +
+           geom_col(fill = "#69b3a2", width = 0.7) +
+           geom_hline(yintercept = 0, color = "gray40", linewidth = 0.8) +
+           labs(
+             title = "Correlation: Check Frequency vs Feelings",
+             x = "Feeling When Unable to Access Social Media",
+             y = "Spearman Correlation Coefficient"
+           ) +
+           coord_flip() +
+           theme_minimal(base_size = 14)
+         
+         # ------------------------------------------
+         # Visualization 2: Heatmap (Optional)
+         # ------------------------------------------
+         corrplot(
+           correlation_matrix,
+           method = "color",
+           type = "upper",
+           tl.col = "black",
+           addCoef.col = "black",
+           number.cex = 0.7
+         )
+         
